@@ -2,7 +2,7 @@
 
 See your Claude Code context as a star map.
 
-Constellation reads your `~/.claude` folder. It draws every memory note, skill, agent, command, hook, MCP server, plugin and project as a star. It draws the links between them as lines, like the graph view in Obsidian.
+Constellation reads your `~/.claude` folder. It draws every memory note, skill, agent, command, hook, MCP server, plugin and project as a star. It draws the links between them as lines.
 
 ![The demo graph: a fictional developer's Claude Code setup](docs/overview.png)
 
