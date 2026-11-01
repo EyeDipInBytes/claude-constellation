@@ -139,6 +139,9 @@
   let neighborCache = { node: null, set: null };
   let zoomGoal = null;
   let labelAnim = false;
+  let pathInfo = null; // { from, to, nodes, links, set, none }
+  let pathArm = null; // a star waiting for its path target (touch friendly)
+  let exporting = false;
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // Each hub with enough members gets a soft nebula behind its cluster.
@@ -641,7 +644,8 @@
     for (let i = 0; i < visNodes.length; i++) {
       const n = visNodes[i];
       let target = 1;
-      if (nb) target = nb.has(n) ? 1 : 0.1;
+      if (pathInfo) target = pathInfo.set.has(n) ? 1 : 0.07;
+      else if (nb) target = nb.has(n) ? 1 : 0.1;
       else if (searchSet) target = searchSet.has(n) ? 1 : 0.1;
       const d = target - n.hl;
       if (Math.abs(d) > 0.004) {
@@ -653,7 +657,7 @@
         moving = true;
       }
     }
-    const ft = nb || searchSet ? 1 : 0;
+    const ft = nb || searchSet || pathInfo ? 1 : 0;
     if (Math.abs(ft - focusAmt) > 0.004) {
       focusAmt += (ft - focusAmt) * 0.2;
       moving = true;
@@ -731,8 +735,43 @@
       ctx.stroke();
     }
 
+    // a traced path: wide soft glow, bright core, pulses from start to end
+    if (pathInfo && pathInfo.links.length) {
+      const time = now / 1000;
+      const ns = pathInfo.nodes;
+      for (let i = 0; i < pathInfo.links.length; i++) {
+        const a = ns[i];
+        const b = ns[i + 1];
+        const g = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+        g.addColorStop(0, hexA(a.color, 1));
+        g.addColorStop(1, hexA(b.color, 1));
+        ctx.strokeStyle = g;
+        ctx.globalAlpha = 0.22;
+        ctx.lineWidth = 7 * lineScale;
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+        ctx.globalAlpha = 0.95;
+        ctx.lineWidth = 1.9 * lineScale;
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < pathInfo.links.length; i++) {
+        const a = ns[i];
+        const b = ns[i + 1];
+        const p = (time * 0.55 + i * 0.18) % 1;
+        ctx.globalAlpha = Math.sin(p * Math.PI);
+        ctx.fillStyle = '#ffffff';
+        ctx.beginPath();
+        ctx.arc(a.x + (b.x - a.x) * p, a.y + (b.y - a.y) * p, 2.2 / Math.sqrt(k), 0, TAU);
+        ctx.fill();
+      }
+      ctx.globalCompositeOperation = 'source-over';
+    }
+
     // highlighted links around the focused node
-    if (f && f.visible) {
+    if (!pathInfo && f && f.visible) {
       const fl = [];
       for (const l of f.out) if (l.t.visible) fl.push(l);
       for (const l of f.inn) if (l.s.visible) fl.push(l);
@@ -875,7 +914,12 @@
       else want = clamp01((size - 2.4) / 2.6);
       if (!S.showLabels && !hub) want = 0;
       let pri = (hub ? 1e5 : 0) + (n.type === 'project' || n.type === 'index' || n.type === 'instructions' ? 2e4 : 0) + size * 100 + n.deg;
-      if (nb) {
+      if (pathInfo) {
+        if (pathInfo.set.has(n)) {
+          want = 1;
+          pri += 5e6;
+        } else want = hub ? 0.3 : 0;
+      } else if (nb) {
         if (nb.has(n)) {
           want = 1;
           pri += 1e6;
@@ -919,7 +963,7 @@
         list.push(r);
       });
     // the glass panels count as taken space, so no name hides under them
-    for (const sel of ['.brand', '.search', '.toolbar', '#legend', '#panel', '#settings', '#timeline']) {
+    for (const sel of exporting ? [] : ['.brand', '.search', '.toolbar', '#legend', '#panel', '#settings', '#insights', '#timeline']) {
       const el = document.querySelector(sel);
       if (!el || el.hidden) continue;
       const b = el.getBoundingClientRect();
@@ -1211,7 +1255,11 @@
       drag.node.fx = null;
       drag.node.fy = null;
       sim.alphaTarget = 0;
-      if (!drag.moved) select(drag.node);
+      if (!drag.moved) {
+        const from = pathArm || (e.shiftKey ? selected : null);
+        if (from && drag.node !== from) tracePath(from, drag.node);
+        else select(drag.node);
+      }
     } else if (drag.type === 'pan' && !drag.moved && e.type === 'pointerup') {
       select(null);
     }
@@ -1256,6 +1304,8 @@
 
   // ------------------------------------------------------------------ selection + panel
   function select(n, { fly = false } = {}) {
+    pathInfo = null;
+    pathArm = null;
     selected = n;
     neighborCache.node = null;
     if (!n && focusDepth) {
@@ -1267,6 +1317,50 @@
     if (n && fly) {
       autoFit = false;
       flyTo({ x: n.x + panelWidth() / 2 / Math.max(cam.k, 1.2), y: n.y, k: Math.max(cam.k, 1.2) });
+    }
+    needsRender = true;
+  }
+
+  // Shortest path over the visible map. Structure lines count only when
+  // no path exists without them, so the answer shows a real relation.
+  function shortestPath(a, b, withStructure) {
+    const prev = new Map([[a, null]]);
+    const queue = [a];
+    for (let qi = 0; qi < queue.length; qi++) {
+      const n = queue[qi];
+      if (n === b) break;
+      const step = (l, m) => {
+        if (!m.visible || prev.has(m)) return;
+        if (!withStructure && l.kind === 'contains') return;
+        prev.set(m, [n, l]);
+        queue.push(m);
+      };
+      for (const l of n.out) step(l, l.t);
+      for (const l of n.inn) step(l, l.s);
+    }
+    if (!prev.has(b)) return null;
+    const ns = [b];
+    const ls = [];
+    for (let cur = b; cur !== a; ) {
+      const [p, l] = prev.get(cur);
+      ls.push(l);
+      ns.push(p);
+      cur = p;
+    }
+    return { nodes: ns.reverse(), links: ls.reverse() };
+  }
+  function tracePath(a, b) {
+    const found = shortestPath(a, b, false) || shortestPath(a, b, true);
+    selected = a;
+    pathArm = null;
+    neighborCache.node = null;
+    pathInfo = found
+      ? { from: a, to: b, nodes: found.nodes, links: found.links, set: new Set(found.nodes) }
+      : { from: a, to: b, nodes: [a], links: [], set: new Set([a, b]), none: true };
+    renderPanel(a);
+    if (found) {
+      autoFit = false;
+      flyTo(fitTarget(found.nodes));
     }
     needsRender = true;
   }
@@ -1326,6 +1420,46 @@
     meta.connections = String(n.deg);
     const rows = Object.entries(meta).filter(([, v]) => v != null && v !== '');
     if (rows.length) kids.push(h('dl', null, rows.map(([k, v]) => [h('dt', null, k), h('dd', null, String(v))])));
+
+    if (pathInfo && pathInfo.from === n) {
+      const steps = pathInfo.links.length;
+      kids.push(h('h4', null, pathInfo.none ? 'No path' : `Path · ${steps} step${steps === 1 ? '' : 's'}`));
+      if (pathInfo.none) {
+        kids.push(h('p', { class: 'note' }, `Nothing on the map links ${n.label} to ${pathInfo.to.label}.`));
+      } else {
+        const chain = h('div', { class: 'chain' });
+        pathInfo.nodes.forEach((node, i) => {
+          if (i) {
+            const l = pathInfo.links[i - 1];
+            const word = l.s === pathInfo.nodes[i - 1] ? OUT_WORD[l.kind] : IN_WORD[l.kind];
+            chain.append(h('div', { class: 'via' }, word));
+          }
+          chain.append(
+            h('button', { type: 'button', class: 'step', onclick: () => select(node, { fly: true }) },
+              h('i', { class: 'dot', style: `--c:${node.color}` }),
+              h('span', null, node.label),
+              h('em', null, typeLabel(node))),
+          );
+        });
+        kids.push(chain);
+      }
+      kids.push(h('button', { type: 'button', class: 'text-btn', onclick: () => { pathInfo = null; renderPanel(n); needsRender = true; } }, 'Clear path'));
+    } else {
+      kids.push(h('h4', null, 'Trace a path'));
+      kids.push(
+        h('div', { class: 'path-row' },
+          h('button', {
+            type: 'button',
+            class: pathArm === n ? 'text-btn on' : 'text-btn',
+            onclick: (e) => {
+              pathArm = pathArm === n ? null : n;
+              e.currentTarget.classList.toggle('on', pathArm === n);
+              e.currentTarget.textContent = pathArm === n ? 'Now click the target star' : 'Pick a target star';
+            },
+          }, pathArm === n ? 'Now click the target star' : 'Pick a target star'),
+          h('span', { class: 'note inline' }, 'or Shift-click it')),
+      );
+    }
 
     kids.push(h('h4', null, 'Local graph'));
     const seg = h('div', { class: 'seg', role: 'group' });
@@ -1664,7 +1798,130 @@
       settingsEl.hidden = true;
       btnSettings.setAttribute('aria-expanded', 'false');
     }
+    if (!insightsEl.hidden) {
+      insightsEl.hidden = true;
+      btnInsights.setAttribute('aria-expanded', 'false');
+    }
   }
+
+  // ------------------------------------------------------------------ insights
+  const insightsEl = $('#insights');
+  const btnInsights = $('#btn-insights');
+  const NOW = Date.parse((DATA.meta && DATA.meta.generated) || '') || Date.now();
+  const QUIET_DAYS = 45;
+  function insightLists() {
+    const real = (n) => n.out.concat(n.inn).some((l) => l.kind !== 'contains');
+    return [
+      {
+        title: 'Brightest stars',
+        about: 'The most connected files.',
+        list: nodes.filter((n) => n.type !== 'root' && n.type !== 'group').sort((a, b) => b.deg - a.deg),
+        meta: (n) => `${n.deg} links`,
+        cap: 8,
+      },
+      {
+        title: 'Lone notes',
+        about: 'Nothing links to or from these, not even an index.',
+        list: nodes.filter((n) => ['memory', 'skill', 'agent', 'command', 'doc'].includes(n.type) && !real(n)),
+        meta: (n) => typeLabel(n),
+      },
+      {
+        title: 'Unwritten links',
+        about: 'A note links here, but the note does not exist yet.',
+        list: nodes.filter((n) => n.type === 'ghost').sort((a, b) => b.inn.length - a.inn.length),
+        meta: (n) => `from ${n.inn.length}`,
+      },
+      {
+        title: `Quiet notes`,
+        about: `Memory not changed in ${QUIET_DAYS} days or more.`,
+        list: nodes
+          .filter((n) => n.type === 'memory' && n.modified && NOW - Date.parse(n.modified) > QUIET_DAYS * 86400000)
+          .sort((a, b) => Date.parse(a.modified) - Date.parse(b.modified)),
+        meta: (n) => fmtDate(n.modified),
+      },
+    ];
+  }
+  function renderInsights() {
+    const kids = [h('h3', null, 'Insights')];
+    for (const sec of insightLists()) {
+      const head = h('div', { class: 'ins-head' },
+        h('span', null, sec.title, sec.cap ? null : h('b', null, sec.list.length.toLocaleString())),
+        sec.list.length && sec.title !== 'Brightest stars'
+          ? h('button', {
+              type: 'button',
+              onclick: () => {
+                q.value = '';
+                results.hidden = true;
+                searchSet = new Set(sec.list.filter((n) => n.visible));
+                needsRender = true;
+                closeFloating();
+              },
+            }, 'Light up')
+          : null);
+      kids.push(head, h('p', { class: 'ins-about' }, sec.about));
+      const cap = sec.cap || 6;
+      const ul = h('ul');
+      for (const n of sec.list.slice(0, cap)) {
+        ul.append(
+          h('li', null,
+            h('button', { type: 'button', onclick: () => { closeFloating(); select(n, { fly: true }); } },
+              h('i', { class: 'dot', style: `--c:${n.color}` }),
+              h('span', { class: 'l-name' }, n.label),
+              h('span', { class: 'l-count' }, sec.meta(n)))),
+        );
+      }
+      if (sec.list.length > cap) ul.append(h('li', { class: 'more' }, `+${(sec.list.length - cap).toLocaleString()} more. Use Light up to see them all.`));
+      if (!sec.list.length) ul.append(h('li', { class: 'more' }, 'None. Nice.'));
+      kids.push(ul);
+    }
+    insightsEl.replaceChildren(...kids);
+  }
+  btnInsights.addEventListener('click', () => {
+    const open = insightsEl.hidden;
+    closeFloating();
+    if (open) {
+      renderInsights();
+      insightsEl.hidden = false;
+      btnInsights.setAttribute('aria-expanded', 'true');
+    }
+  });
+
+  // ------------------------------------------------------------------ export
+  function exportPng() {
+    exporting = true;
+    render(performance.now());
+    exporting = false;
+    needsRender = true;
+    const out = document.createElement('canvas');
+    out.width = canvas.width;
+    out.height = canvas.height;
+    const g = out.getContext('2d');
+    const cx = out.width / 2;
+    const cy = out.height * 0.46;
+    const bg = g.createRadialGradient(cx, cy, 0, cx, cy, Math.max(out.width, out.height) * 0.75);
+    bg.addColorStop(0, '#101429');
+    bg.addColorStop(0.45, '#0a0c18');
+    bg.addColorStop(1, '#04050a');
+    g.fillStyle = bg;
+    g.fillRect(0, 0, out.width, out.height);
+    g.drawImage(canvas, 0, 0);
+    g.font = `600 ${12 * dpr}px ${FONT}`;
+    g.textAlign = 'right';
+    g.textBaseline = 'bottom';
+    g.fillStyle = 'rgba(255,255,255,0.42)';
+    g.fillText('✦ Constellation', out.width - 18 * dpr, out.height - 16 * dpr);
+    out.toBlob((blob) => {
+      if (!blob) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'constellation.png';
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }, 'image/png');
+  }
+  $('#btn-export').addEventListener('click', exportPng);
 
   // ------------------------------------------------------------------ keys
   addEventListener('keydown', (e) => {
@@ -1675,9 +1932,20 @@
       q.focus();
       q.select();
     } else if (e.key === 'Escape') {
-      if (!settingsEl.hidden) closeFloating();
-      else select(null);
-    } else if (e.key === 'f' || e.key === 'F') fit();
+      if (!settingsEl.hidden || !insightsEl.hidden) closeFloating();
+      else if (pathInfo || pathArm) {
+        pathInfo = null;
+        pathArm = null;
+        if (selected) renderPanel(selected);
+        needsRender = true;
+      } else if (selected) select(null);
+      else if (searchSet) {
+        searchSet = null;
+        q.value = '';
+        needsRender = true;
+      }
+    } else if (e.key === 'i' || e.key === 'I') btnInsights.click();
+    else if (e.key === 'f' || e.key === 'F') fit();
     else if (e.key === 't' || e.key === 'T') timelapse.active ? stopTimelapse() : startTimelapse();
   });
 

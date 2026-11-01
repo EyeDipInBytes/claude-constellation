@@ -56,6 +56,9 @@ The lines come from four sources:
 - Click **1 hop** or **2 hops** in the panel to see only the local graph.
 - Press `/` to search. Press `Enter` to fly to the first match.
 - Click a row in the legend to hide that kind of star. Alt-click to show only that kind.
+- Shift-click a second star to trace the shortest path between the two. On a phone, use **Pick a target star** in the panel.
+- Press `I` for insights: your brightest stars, lone notes, unwritten links and notes you have not changed in 45 days.
+- Click the download button to save the current view as a PNG. The image has no panels on it.
 - Press `T` for the time-lapse. Stars appear in the order you made the files.
 - Press `F` to fit the map to the screen.
 - Open the settings button to change the forces: repel, link distance, link strength and center pull.
