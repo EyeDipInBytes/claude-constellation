@@ -28,6 +28,7 @@ html, body {
     radial-gradient(1100px 760px at 50% 46%, #101429 0%, rgba(10, 12, 24, 0.6) 45%, rgba(4, 5, 10, 0) 75%),
     radial-gradient(900px 600px at 85% 110%, rgba(110, 70, 190, 0.12), transparent 70%),
     radial-gradient(700px 500px at 0% 0%, rgba(40, 120, 190, 0.08), transparent 70%),
+    linear-gradient(118deg, transparent 28%, rgba(120, 110, 210, 0.045) 44%, rgba(150, 170, 255, 0.06) 50%, rgba(110, 90, 200, 0.04) 56%, transparent 72%),
     var(--bg);
 }
 
@@ -420,6 +421,33 @@ kbd {
 #time-label { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }
 #timeline .bar { margin-top: 8px; height: 3px; border-radius: 3px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
 #timeline .bar i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, #6cc6ff, #b39bff, #ff8fb1); }
+
+/* ---------- hover card ---------- */
+#tip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 6;
+  max-width: 290px;
+  padding: 9px 12px 10px;
+  border-radius: 11px;
+  pointer-events: none;
+  background: var(--panel-strong);
+  will-change: transform;
+}
+#tip .tip-type { display: flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--c); }
+#tip .tip-type .dot { width: 6px; height: 6px; }
+#tip .tip-label { margin-top: 3px; font-size: 13.5px; font-weight: 650; color: var(--text); word-break: break-word; }
+#tip .tip-desc {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #b9bfcc;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+#tip .tip-meta { margin-top: 6px; font-size: 11px; color: var(--faint); }
 
 /* ---------- hint + empty ---------- */
 #hint {

@@ -51,7 +51,7 @@ The lines come from four sources:
 ## How to use the map
 
 - Scroll to zoom. Drag the sky to move. Drag a star to pull it.
-- Hover a star to light up its neighbors. Small dots flow along each line.
+- Hover a star to see a short card and light up its neighbors. Small dots flow along each line.
 - Click a star to open its panel: path, description, settings, links and a text preview.
 - Click **1 hop** or **2 hops** in the panel to see only the local graph.
 - Press `/` to search. Press `Enter` to fly to the first match.

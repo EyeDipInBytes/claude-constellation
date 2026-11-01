@@ -137,6 +137,33 @@
   let visNodes = [];
   let visLinks = [];
   let neighborCache = { node: null, set: null };
+  let zoomGoal = null;
+  let labelAnim = false;
+  const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // Each hub with enough members gets a soft nebula behind its cluster.
+  const clusters = nodes
+    .filter((h) => (h.type === 'group' && h.id && h.label !== 'Projects') || h.type === 'project' || h.type === 'index')
+    .map((h) => {
+      const members = h.out.filter((l) => l.kind === 'contains' || (h.type === 'index' && l.kind === 'link')).map((l) => l.t);
+      const tally = new Map();
+      for (const m of members) tally.set(m.color, (tally.get(m.color) || 0) + 1);
+      const color = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || h.color;
+      return { hub: h, members, color };
+    })
+    .filter((c) => c.members.length >= 4);
+
+  // Lines take the color of the star they leave, softened toward grey.
+  for (const l of links) {
+    const from = l.s.type === 'root' || l.s.type === 'group' ? l.t : l.s;
+    l.tint = l.t.type === 'ghost' ? '#7a8296' : mix(from.color, '#9aa6c6', 0.45);
+  }
+  function mix(a, b, t) {
+    const x = parseInt(a.slice(1), 16);
+    const y = parseInt(b.slice(1), 16);
+    const ch = (s) => Math.round(((x >> s) & 255) * (1 - t) + ((y >> s) & 255) * t);
+    return '#' + ((1 << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)).toString(16).slice(1);
+  }
   const sim = { alpha: 1, alphaMin: 0.003, alphaDecay: 1 - Math.pow(0.003, 1 / 300), alphaTarget: 0, velocityDecay: 0.42 };
   const timelapse = { active: false, t0: 0, times: [], idx: 0, dur: 14000, endAt: 0 };
 
@@ -194,6 +221,7 @@
     root.x = 0;
     root.y = 0;
     root.ang = shuffle * 1.7;
+    root.depth = 0;
     const queue = [root];
     while (queue.length) {
       const p = queue.shift();
@@ -203,6 +231,7 @@
       for (const l of p.inn) if (!placed.has(l.s) && !kids.includes(l.s)) kids.push(l.s);
       kids.forEach((c, k) => {
         placed.add(c);
+        c.depth = p.depth + 1;
         if (p === root) {
           const a = p.ang + (k / Math.max(kids.length, 1)) * TAU;
           c.ang = a;
@@ -225,6 +254,7 @@
       if (placed.has(n)) continue;
       const r = 700 + 14 * Math.sqrt(i);
       const a = i * golden;
+      n.depth = 6;
       n.x = r * Math.cos(a);
       n.y = r * Math.sin(a);
       i++;
@@ -488,13 +518,14 @@
     camAnim = { from: { ...cam }, to: target, t0: performance.now(), ms };
     needsRender = true;
   }
-  function zoomAt(sx, sy, factor) {
+  function zoomAt(sx, sy, factor, keepGoal = false) {
     const [wx, wy] = toWorld(sx, sy);
     const k = Math.max(0.03, Math.min(8, cam.k * factor));
     cam.k = k;
     cam.x = wx - (sx - W / 2) / k;
     cam.y = wy - (sy - H / 2) / k;
     camAnim = null;
+    if (!keepGoal) zoomGoal = null;
     needsRender = true;
   }
   function userTookCamera() {
@@ -519,6 +550,35 @@
     g.fillRect(0, 0, 128, 128);
     glowCache.set(color, c);
     return c;
+  }
+  const hazeCache = new Map();
+  function haze(color) {
+    let c = hazeCache.get(color);
+    if (c) return c;
+    c = document.createElement('canvas');
+    c.width = c.height = 256;
+    const g = c.getContext('2d');
+    const grad = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+    grad.addColorStop(0, hexA(color, 1));
+    grad.addColorStop(0.35, hexA(color, 0.55));
+    grad.addColorStop(0.7, hexA(color, 0.15));
+    grad.addColorStop(1, hexA(color, 0));
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 256, 256);
+    hazeCache.set(color, c);
+    return c;
+  }
+  function clamp01(v) {
+    return v < 0 ? 0 : v > 1 ? 1 : v;
+  }
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
   }
   function hexA(hex, a) {
     const v = parseInt(hex.slice(1), 16);
@@ -574,7 +634,7 @@
     neighborCache = { node: n, set };
     return set;
   }
-  function updateHighlights() {
+  function updateHighlights(now) {
     const f = focusNode();
     const nb = f ? neighbors(f) : null;
     let moving = false;
@@ -589,7 +649,7 @@
         moving = true;
       } else n.hl = target;
       if (n.pop < 1) {
-        n.pop = Math.min(1, n.pop + (1 - n.pop) * 0.12 + 0.004);
+        if (!n.popAt || now >= n.popAt) n.pop = Math.min(1, n.pop + (1 - n.pop) * 0.12 + 0.004);
         moving = true;
       }
     }
@@ -615,25 +675,58 @@
     const inView = (x, y, m) => x + m > vx0 && x - m < vx1 && y + m > vy0 && y - m < vy1;
     const lineScale = Math.pow(Math.min(Math.max(k, 0.35), 2.5), 0.5) / k;
 
-    // links, batched by kind
-    ctx.lineCap = 'round';
     const f = focusNode();
-    for (const kind of ['contains', 'mention', 'uses', 'link']) {
-      const st = LINK[kind];
-      ctx.beginPath();
-      let any = false;
-      for (let i = 0; i < visLinks.length; i++) {
-        const l = visLinks[i];
-        if (l.kind !== kind) continue;
-        const { s, t } = l;
-        if ((s.x < vx0 && t.x < vx0) || (s.x > vx1 && t.x > vx1) || (s.y < vy0 && t.y < vy0) || (s.y > vy1 && t.y > vy1)) continue;
-        ctx.moveTo(s.x, s.y);
-        ctx.lineTo(t.x, t.y);
-        any = true;
+
+    // nebulae: a soft haze behind each cluster, in its main color
+    ctx.globalCompositeOperation = 'lighter';
+    for (const c of clusters) {
+      if (!c.hub.visible) continue;
+      let cx = 0;
+      let cy = 0;
+      let cnt = 0;
+      let pop = 0;
+      for (const m of c.members) {
+        if (!m.visible) continue;
+        cx += m.x;
+        cy += m.y;
+        pop += m.pop;
+        cnt++;
       }
-      if (!any) continue;
-      ctx.globalAlpha = st.a * (1 - 0.75 * focusAmt) * (kind === 'contains' && !S.showContains ? 0 : 1);
-      ctx.strokeStyle = st.color;
+      if (cnt < 4) continue;
+      cx /= cnt;
+      cy /= cnt;
+      let spread = 0;
+      for (const m of c.members) if (m.visible) spread += (m.x - cx) ** 2 + (m.y - cy) ** 2;
+      const R = Math.sqrt(spread / cnt) * 1.55 + 40;
+      if (!inView(cx, cy, R)) continue;
+      const near = c.hub === f || (f && c.members.includes(f));
+      ctx.globalAlpha = Math.min(0.2, 0.05 + cnt / 900) * (pop / cnt) * (near ? 1.4 : 1 - 0.7 * focusAmt);
+      ctx.drawImage(haze(c.color), cx - R, cy - R, R * 2, R * 2);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+
+    // links, batched by kind and tint
+    ctx.lineCap = 'round';
+    const batches = new Map();
+    for (let i = 0; i < visLinks.length; i++) {
+      const l = visLinks[i];
+      const { s, t } = l;
+      if ((s.x < vx0 && t.x < vx0) || (s.x > vx1 && t.x > vx1) || (s.y < vy0 && t.y < vy0) || (s.y > vy1 && t.y > vy1)) continue;
+      const key = l.kind + l.tint;
+      let arr = batches.get(key);
+      if (!arr) batches.set(key, (arr = []));
+      arr.push(l);
+    }
+    const fade = 1 - 0.78 * focusAmt;
+    for (const arr of batches.values()) {
+      const st = LINK[arr[0].kind];
+      ctx.beginPath();
+      for (const l of arr) {
+        ctx.moveTo(l.s.x, l.s.y);
+        ctx.lineTo(l.t.x, l.t.y);
+      }
+      ctx.globalAlpha = st.a * 1.25 * fade;
+      ctx.strokeStyle = arr[0].tint;
       ctx.lineWidth = st.w * lineScale;
       ctx.stroke();
     }
@@ -760,43 +853,126 @@
       ctx.stroke();
     }
 
-    // labels in screen space for crisp text
+    // labels: rank by importance, then place greedily so none overlap
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
+    ctx.lineJoin = 'round';
     const nb = f ? neighbors(f) : null;
+    const cand = [];
     for (let i = 0; i < visNodes.length; i++) {
       const n = visNodes[i];
       const [sx, sy] = toScreen(n.x, n.y);
-      if (sx < -150 || sx > W + 150 || sy < -40 || sy > H + 40) continue;
+      if (sx < -150 || sx > W + 150 || sy < -40 || sy > H + 40) {
+        n.lab = 0;
+        continue;
+      }
       const hub = n.type === 'root' || n.type === 'group';
-      let la;
-      if (hub) la = 1;
-      else if (n.type === 'project') la = Math.min(1, Math.max(0, (n.r * k - 2.2) / 2.5));
-      else la = Math.min(1, Math.max(0, (n.r * k - 5) / 3.5));
-      if (!S.showLabels && !hub) la = 0;
-      if (nb) la = nb.has(n) ? Math.max(la, n === f || nb.size < 60 ? 1 : 0.85) : la * 0.12;
-      else if (searchSet) la = searchSet.has(n) ? Math.max(la, searchSet.size < 40 ? 1 : la) : la * 0.15;
-      if (n === selected) la = 1;
-      la *= n.pop * (hub ? Math.max(n.hl, 0.25) : 1);
-      if (la < 0.04) continue;
-      const y = sy + n.r * k * (n.type === 'root' ? 1.9 : 1) + 5;
+      const size = n.r * k;
+      let want;
+      if (hub) want = 1;
+      else if (n.type === 'project') want = clamp01((size - 1.6) / 2);
+      else want = clamp01((size - 2.4) / 2.6);
+      if (!S.showLabels && !hub) want = 0;
+      let pri = (hub ? 1e5 : 0) + (n.type === 'project' || n.type === 'index' || n.type === 'instructions' ? 2e4 : 0) + size * 100 + n.deg;
+      if (nb) {
+        if (nb.has(n)) {
+          want = 1;
+          pri += 1e6;
+        } else want = hub ? 0.35 : 0;
+      } else if (searchSet) {
+        if (searchSet.has(n)) {
+          want = Math.max(want, searchSet.size <= 40 ? 1 : want);
+          pri += 1e6;
+        } else want = hub ? 0.35 : 0;
+      }
+      if (n === selected || n === f) {
+        want = 1;
+        pri += 1e7;
+      }
+      if (want < 0.02 && !(n.lab > 0.01)) {
+        n.lab = 0;
+        continue;
+      }
+      cand.push({ n, sx, sy, want, pri, hub });
+    }
+    cand.sort((a, b) => b.pri - a.pri);
+    const grid = new Map();
+    const CELL = 64;
+    const cellsOf = (r, fn) => {
+      for (let gx = Math.floor(r[0] / CELL); gx <= Math.floor(r[2] / CELL); gx++) {
+        for (let gy = Math.floor(r[1] / CELL); gy <= Math.floor(r[3] / CELL); gy++) if (fn(gx + ',' + gy) === false) return false;
+      }
+      return true;
+    };
+    const fits = (r) =>
+      cellsOf(r, (key) => {
+        const list = grid.get(key);
+        if (!list) return true;
+        for (const o of list) if (r[0] < o[2] && r[2] > o[0] && r[1] < o[3] && r[3] > o[1]) return false;
+        return true;
+      });
+    const claim = (r) =>
+      cellsOf(r, (key) => {
+        let list = grid.get(key);
+        if (!list) grid.set(key, (list = []));
+        list.push(r);
+      });
+    // the glass panels count as taken space, so no name hides under them
+    for (const sel of ['.brand', '.search', '.toolbar', '#legend', '#panel', '#settings', '#timeline']) {
+      const el = document.querySelector(sel);
+      if (!el || el.hidden) continue;
+      const b = el.getBoundingClientRect();
+      if (b.width && b.height) claim([b.left - 4, b.top - 4, b.right + 4, b.bottom + 4]);
+    }
+    labelAnim = false;
+    for (const c of cand) {
+      const { n, sx, sy, hub } = c;
+      const strong = n === f || n === selected;
       let text = n.label;
       if (text.length > 38) text = text.slice(0, 36) + '…';
+      let font;
+      let spacing = '0px';
       if (hub) {
-        ctx.font = n.type === 'root' ? `650 13px ${FONT}` : `650 10.5px ${FONT}`;
-        if ('letterSpacing' in ctx) ctx.letterSpacing = n.type === 'root' ? '0.04em' : '0.14em';
-        text = n.type === 'root' ? text : text.toUpperCase();
-      } else {
-        ctx.font = `${n === f || n === selected ? 600 : 500} 11px ${FONT}`;
-        if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+        font = n.type === 'root' ? `650 13px ${FONT}` : `650 10.5px ${FONT}`;
+        spacing = n.type === 'root' ? '0.04em' : '0.14em';
+        if (n.type !== 'root') text = text.toUpperCase();
+      } else font = `${strong ? 600 : 500} ${strong ? 12 : 11}px ${FONT}`;
+      ctx.font = font;
+      if ('letterSpacing' in ctx) ctx.letterSpacing = spacing;
+      const key = font + spacing + text;
+      if (n.twKey !== key) {
+        n.tw = ctx.measureText(text).width;
+        n.twKey = key;
       }
+      const y = sy + n.r * k * (n.type === 'root' ? 1.9 : 1) + 5;
+      const rect = [sx - n.tw / 2 - 3, y - 1, sx + n.tw / 2 + 3, y + (hub ? 13 : 14)];
+      let target = c.want;
+      if (target > 0.02) {
+        if (fits(rect)) claim(rect);
+        else target = 0;
+      }
+      const cur = n.lab || 0;
+      const next = Math.abs(target - cur) < 0.02 ? target : cur + (target - cur) * (target > cur ? 0.22 : 0.3);
+      n.lab = next;
+      if (next !== target) labelAnim = true;
+      const la = next * n.pop * (hub ? Math.max(n.hl, 0.3) : 1);
+      if (la < 0.03) continue;
       ctx.globalAlpha = la;
-      ctx.lineJoin = 'round';
-      ctx.lineWidth = 3.5;
-      ctx.strokeStyle = 'rgba(4,5,10,0.85)';
-      ctx.strokeText(text, sx, y);
-      ctx.fillStyle = hub ? (n.type === 'root' ? '#ffffff' : '#aab2c6') : n === f || n === selected ? '#ffffff' : '#d9dde8';
+      if (strong && !hub) {
+        // a dark pill behind the focused name
+        ctx.fillStyle = 'rgba(8,10,18,0.78)';
+        roundRect(rect[0] - 3, rect[1] - 2, rect[2] - rect[0] + 6, rect[3] - rect[1] + 3, 7);
+        ctx.fill();
+        ctx.strokeStyle = hexA(n.color, 0.45);
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else {
+        ctx.lineWidth = 3.5;
+        ctx.strokeStyle = 'rgba(4,5,10,0.85)';
+        ctx.strokeText(text, sx, y);
+      }
+      ctx.fillStyle = hub ? (n.type === 'root' ? '#ffffff' : '#aab2c6') : strong ? '#ffffff' : '#d9dde8';
       ctx.fillText(text, sx, y);
     }
     if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
@@ -834,7 +1010,15 @@
       active = true;
     }
 
-    if (updateHighlights()) active = true;
+    if (zoomGoal) {
+      const step = Math.pow(zoomGoal.k / cam.k, 0.26);
+      zoomAt(zoomGoal.sx, zoomGoal.sy, step, true);
+      if (Math.abs(Math.log(zoomGoal.k / cam.k)) < 0.003) zoomGoal = null;
+      active = true;
+    }
+
+    if (updateHighlights(now)) active = true;
+    if (labelAnim) active = true;
     if (focusNode() && S.particles) active = true;
     if (selected) active = true; // pulse ring
 
@@ -922,7 +1106,34 @@
 
   const pointers = new Map();
   let drag = null;
+  const tip = $('#tip');
+  let tipNode = null;
+  function showTip(n, x, y) {
+    if (tipNode !== n) {
+      tipNode = n;
+      const lines = [
+        h('div', { class: 'tip-type', style: `--c:${n.color}` }, h('i', { class: 'dot', style: `--c:${n.color}` }), typeLabel(n)),
+        h('div', { class: 'tip-label' }, n.label),
+      ];
+      if (n.desc) lines.push(h('div', { class: 'tip-desc' }, n.desc));
+      lines.push(h('div', { class: 'tip-meta' }, `${n.deg} connection${n.deg === 1 ? '' : 's'}${n.project && n.type !== 'project' ? ' · ' + n.project : ''}`));
+      tip.replaceChildren(...lines);
+      tip.hidden = false;
+    }
+    const w = tip.offsetWidth;
+    const hh = tip.offsetHeight;
+    const left = x + 16 + w > innerWidth - 8 ? x - w - 16 : x + 16;
+    const top = Math.min(innerHeight - hh - 8, Math.max(8, y + 22));
+    tip.style.transform = `translate(${Math.round(left)}px, ${Math.round(top)}px)`;
+  }
+  function hideTip() {
+    if (!tipNode) return;
+    tipNode = null;
+    tip.hidden = true;
+  }
+
   canvas.addEventListener('pointerdown', (e) => {
+    hideTip();
     canvas.setPointerCapture(e.pointerId);
     pointers.set(e.pointerId, { x: e.offsetX, y: e.offsetY });
     closeFloating();
@@ -985,6 +1196,8 @@
         canvas.classList.toggle('over-node', Boolean(hit));
         needsRender = true;
       }
+      if (hit && hit !== selected) showTip(hit, e.clientX, e.clientY);
+      else hideTip();
     }
   });
   const endPointer = (e) => {
@@ -1008,6 +1221,7 @@
   canvas.addEventListener('pointerup', endPointer);
   canvas.addEventListener('pointercancel', endPointer);
   canvas.addEventListener('pointerleave', () => {
+    hideTip();
     if (hover && !drag) {
       hover = null;
       canvas.classList.remove('over-node');
@@ -1019,9 +1233,15 @@
     (e) => {
       e.preventDefault();
       userTookCamera();
+      hideTip();
       const unit = e.deltaMode === 1 ? 16 : 1;
       const factor = Math.exp(-e.deltaY * unit * (e.ctrlKey ? 0.01 : 0.0017));
-      zoomAt(e.offsetX, e.offsetY, factor);
+      if (e.ctrlKey) {
+        zoomAt(e.offsetX, e.offsetY, factor); // trackpad pinch: follow the fingers
+      } else {
+        const base = zoomGoal ? zoomGoal.k : cam.k;
+        zoomGoal = { k: Math.max(0.03, Math.min(8, base * factor)), sx: e.offsetX, sy: e.offsetY };
+      }
     },
     { passive: false },
   );
@@ -1503,6 +1723,14 @@
   seedLayout();
   computeVisible();
   renderLegend();
+  if (!reducedMotion) {
+    // intro: stars light up in waves, from the center outward
+    const t = performance.now();
+    for (const n of nodes) {
+      n.pop = 0;
+      n.popAt = t + 150 + Math.min(n.depth ?? 6, 6) * 240 + hashFloat(n.id) * 520;
+    }
+  }
   const t0 = fitTarget();
   cam.x = t0.x;
   cam.y = t0.y;
