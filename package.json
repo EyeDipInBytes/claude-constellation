@@ -1,0 +1,31 @@
+{
+  "name": "claude-constellation",
+  "version": "0.1.0",
+  "description": "See your Claude Code context as a star map: memory, skills, agents, hooks, MCP servers and projects, linked like an Obsidian graph.",
+  "type": "module",
+  "bin": {
+    "claude-constellation": "bin/constellation.js"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "scripts": {
+    "start": "node bin/constellation.js --open",
+    "demo": "node examples/make-demo.js && node bin/constellation.js --home examples/demo-home --out docs/demo.html",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude",
+    "claude-code",
+    "graph",
+    "obsidian",
+    "visualization",
+    "memory",
+    "context"
+  ],
+  "license": "MIT"
+}
