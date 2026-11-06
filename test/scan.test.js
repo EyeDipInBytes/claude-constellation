@@ -173,7 +173,11 @@ test('redactSecrets kills passwords, any-case auth, query keys and CLI credentia
     'Authorization: ApiKey ' + v,
     'JWT_SECRET="correct horse ' + 'batterystaple' + '"',
     'npm config set //registry.example.invalid/:_auth ' + v,
+    'auth="process.env.AUTH; token=' + v + '"',
   ];
+  // A JWT after a hyphen (v0.1 caught it; round 4 regression)
+  const jwt = 'eyJ' + 'hbGciOiJIUzI1NiJ9' + '.eyJzdWIiOjF9' + '.ZpxONZFKBwlMMyFlMABsSnEiCqweuEQelYFFAolUCjI';
+  assert.equal(redactSecrets('-' + jwt), '-‹redacted›');
   for (const s of leaks) {
     const out = redactSecrets(s);
     assert.ok(!out.includes(v) && !out.includes('hunter2') && !out.includes('batterystaple') && !out.includes('aB3!') && !out.includes('pass phrase'), `leaked: ${s} -> ${out}`);
@@ -181,6 +185,8 @@ test('redactSecrets kills passwords, any-case auth, query keys and CLI credentia
   }
   // References and prose stay readable
   assert.equal(redactSecrets('password: ${DB_PASSWORD}'), 'password: ${DB_PASSWORD}');
+  assert.equal(redactSecrets('secret = process.env.MY_SECRET;'), 'secret = process.env.MY_SECRET;');
+  assert.equal(redactSecrets('password: os.environ.get("DB_PW")'), 'password: os.environ.get("DB_PW")');
   assert.equal(redactSecrets('token based auth and basic understanding'), 'token based auth and basic understanding');
   assert.equal(redactSecrets('see https://example.invalid/docs?page=2'), 'see https://example.invalid/docs?page=2');
   const pemProse = 'A private key begins with `-----BEGIN PRIVATE KEY-----`.\n\nRun the setup wizard to continue.';

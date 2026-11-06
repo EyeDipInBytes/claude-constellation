@@ -23,9 +23,9 @@ const PATTERNS = [
   [/\bglpat-[A-Za-z0-9_-]{16,}/g, MARK],
   [/\bnpm_[A-Za-z0-9]{30,}/g, MARK],
   // JSON web tokens
-  // The lookbehind gives one start per run: a run with many "eyJ" and no dot
-  // would otherwise be scanned again from each "eyJ".
-  [/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, MARK],
+  // Segments are bounded: a run with many "eyJ" and no dot is then scanned at
+  // most a few KB from each "eyJ", not to the end of the run.
+  [/\beyJ[A-Za-z0-9_-]{8,1024}\.[A-Za-z0-9_-]{8,4096}\.[A-Za-z0-9_-]{4,1024}/g, MARK],
   // Authorization headers: Digest carries quoted fields to the line end; any other
   // scheme, the whole value to the line end or closing quote
   [/(\bauthorization["']?[ \t]*[:=][ \t]*["']?digest)[ \t]+[^\n]*/gi, `$1 ${MARK}`],
@@ -101,21 +101,20 @@ function unquote(v) {
   return v.replace(/^["']/, '').replace(/["']$/, '');
 }
 
+const REFERENCE = /^(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?|(?:process\.env|os\.environ|env)(?:\.[A-Za-z_][A-Za-z0-9_]*|\[["']?[A-Za-z_][A-Za-z0-9_]*["']?\])|os\.environ\.get\(["'][A-Za-z_][A-Za-z0-9_]*["']\)|<[^<>\s]+>|(?:os\.environ(?:\.get)?|process\.env)[[(])$/;
+
 function isReference(v) {
   // A pointer to a secret, not the secret: ${VAR}, $VAR, process.env.X, <placeholder>,
   // or a value this filter already replaced whole
-  if (/^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(v)) return true;
-  if (/^(?:process\.env|os\.environ|env)[.[]/.test(v)) return true;
-  if (/^<[^>\s]+>$/.test(v)) return true;
+  if (REFERENCE.test(v)) return true;
   if (v === MARK) return true;
   return false;
 }
 
 function looksLikeWord(v) {
   // Keep plain words and references: "token: required", "secret = process.env.X", "${VAR}"
-  if (/^\$\{?[A-Z_][A-Z0-9_]*\}?$/.test(v)) return true;
+  if (REFERENCE.test(v)) return true;
   if (/^(?:Bearer|Basic|Token)$/i.test(v)) return true;
-  if (/^(?:process\.env|os\.environ|env)[.[]/.test(v)) return true;
   if (/^[a-z]+(?:[-_][a-z]+)*$/.test(v) && v.length < 40) return true;
   if (/^<[^>]+>$/.test(v) || /^\[[^\]]+\]$/.test(v)) return true;
   if (v === MARK) return true;
