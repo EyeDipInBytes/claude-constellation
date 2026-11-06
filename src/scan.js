@@ -80,15 +80,16 @@ export function scan(options = {}) {
 
   function preview(body) {
     if (opts.redact || !body) return undefined;
-    const trimmed = body.replace(/^\s+/, '');
+    // Redact before the cut: a cut can drop the end of a key block or a token.
+    const trimmed = clean(body.replace(/^\s+/, ''));
     const cut = trimmed.length > PREVIEW_CHARS;
-    return clean(cut ? trimmed.slice(0, PREVIEW_CHARS) + '\n…' : trimmed);
+    return cut ? trimmed.slice(0, PREVIEW_CHARS) + '\n…' : trimmed;
   }
 
   function desc(s) {
     if (opts.redact || !s) return undefined;
-    const t = String(s).replace(/\s+/g, ' ').trim();
-    return clean(t.length > DESC_CHARS ? t.slice(0, DESC_CHARS) + '…' : t);
+    const t = clean(String(s)).replace(/\s+/g, ' ').trim();
+    return t.length > DESC_CHARS ? t.slice(0, DESC_CHARS) + '…' : t;
   }
 
   function safeMeta(obj) {

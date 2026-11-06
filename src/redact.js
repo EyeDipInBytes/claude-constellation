@@ -4,8 +4,9 @@
 const MARK = '‹redacted›';
 
 const PATTERNS = [
-  // Private key blocks
+  // Private key blocks, and a block cut before its END line
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, MARK],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*$/g, MARK],
   // Provider-shaped tokens
   [/\bsk-[A-Za-z0-9_-]{16,}/g, MARK],
   [/\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{20,}/g, MARK],
@@ -17,8 +18,29 @@ const PATTERNS = [
   [/\bnpm_[A-Za-z0-9]{30,}/g, MARK],
   // JSON web tokens
   [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, MARK],
-  // Authorization headers
+  // Authorization headers: the whole value, any scheme, any case
+  [
+    /(\bauthorization["']?\s*[:=]\s*["']?)(?:(bearer|basic|token|digest|negotiate)\s+)?([^\s"'`,;]+)/gi,
+    (all, lead, scheme, value) => (isReference(value) ? all : `${lead}${scheme ? scheme + ' ' : ''}${MARK}`),
+  ],
   [/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{12,}/g, `$1 ${MARK}`],
+  [/\b(bearer|basic|token)\s+(?=[A-Za-z._~+/=-]*\d)[A-Za-z0-9._~+/=-]{12,}/gi, `$1 ${MARK}`],
+  // Password assignments: any value, any length, quoted values whole
+  [
+    /(\b[\w.-]*(?:passw(?:or)?d|passphrase|pwd)[\w.-]*["']?\s*[:=]\s*)("[^"\n]*"|'[^'\n]*'|[^\s"'`,;]+)/gi,
+    (all, lead, value) => (isReference(value.replace(/^["']|["']$/g, '')) ? all : `${lead}${MARK}`),
+  ],
+  // Command-line credentials: --token X, --oauth2-bearer X, --password=X, curl -u user:pass
+  [
+    /(\s--?[\w-]*(?:token|bearer|secret|passw(?:or)?d|api[_-]?key|credential)[\w-]*(?:\s+|=))(["']?)([^\s"'`]+)\2/gi,
+    (all, lead, q, value) => (isReference(value) || value.startsWith('-') ? all : `${lead}${q}${MARK}${q}`),
+  ],
+  [/(\s-u\s+["']?[^\s:"']+:)[^\s"']+/g, `$1${MARK}`],
+  // Credential query parameters: ?key=, &access_token=, &sig=, &code=
+  [
+    /([?&][\w.-]*(?:key|token|secret|sig|signature|passw(?:or)?d|pwd|auth|code|credential)[\w.-]*=)([^&#\s"'`]+)/gi,
+    (all, lead, value) => (isReference(value) ? all : `${lead}${MARK}`),
+  ],
   // URLs with credentials: scheme://user:pass@host
   [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/:@]+:[^\s/@]+@/gi, `$1${MARK}@`],
   // key=value or key: value where the key names a secret
@@ -29,6 +51,15 @@ const PATTERNS = [
   // Long opaque strings: 40+ chars of base64/hex with mixed classes
   [/\b[A-Za-z0-9+/_-]{40,}={0,2}/g, (s) => (isOpaque(s) ? MARK : s)],
 ];
+
+function isReference(v) {
+  // A pointer to a secret, not the secret: ${VAR}, $VAR, process.env.X, <placeholder>
+  if (/^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(v)) return true;
+  if (/^(?:process\.env|os\.environ|env)\b/.test(v)) return true;
+  if (/^<[^>]+>$/.test(v)) return true;
+  if (v.includes(MARK)) return true;
+  return false;
+}
 
 function looksLikeWord(v) {
   // Keep plain words and references: "token: required", "secret = process.env.X", "${VAR}"

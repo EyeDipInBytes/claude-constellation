@@ -146,6 +146,52 @@ test('redactSecrets keeps prose and kills tokens', () => {
   assert.match(redactSecrets('Authorization: Bearer ' + 'x'.repeat(10) + '12345abc'), /Bearer ‹redacted›/);
 });
 
+test('redactSecrets kills passwords, any-case auth, query keys and CLI credentials', () => {
+  const v = 'Abc123' + 'Abc123' + 'Abc123';
+  const leaks = [
+    'password=' + 'correcthorse' + 'batterystaple',
+    'password=' + 'aB3!',
+    'password="' + 'test pass phrase 123!' + '"',
+    '"db_password": "' + 'hunter2' + '"',
+    'Authorization: bearer ' + v,
+    'authorization: token ' + v,
+    'https://example.invalid/?key=' + v,
+    'https://example.invalid/cb?state=x&access_token=' + v + '&a=1',
+    'curl --oauth2-bearer ' + v + ' https://example.invalid',
+    'tool --api-key=' + v,
+    'curl -u ada:' + 'hunter2' + ' https://example.invalid',
+  ];
+  for (const s of leaks) {
+    const out = redactSecrets(s);
+    assert.ok(!out.includes(v) && !out.includes('hunter2') && !out.includes('batterystaple') && !out.includes('aB3!') && !out.includes('pass phrase'), `leaked: ${s} -> ${out}`);
+    assert.match(out, /‹redacted›/);
+  }
+  // References and prose stay readable
+  assert.equal(redactSecrets('password: ${DB_PASSWORD}'), 'password: ${DB_PASSWORD}');
+  assert.equal(redactSecrets('token based auth and basic understanding'), 'token based auth and basic understanding');
+  assert.equal(redactSecrets('see https://example.invalid/docs?page=2'), 'see https://example.invalid/docs?page=2');
+});
+
+test('a private key cut by the preview limit leaves no key line in the page', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const { privateKey } = generateKeyPairSync('rsa', {
+    modulusLength: 4096,
+    privateKeyEncoding: { type: 'pkcs1', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+  const keyLines = privateKey.split('\n').filter((l) => l.length > 40);
+  const cutOut = redactSecrets(privateKey.slice(0, 1800) + '\n…');
+  assert.equal(cutOut.split('\n').filter((l) => keyLines.includes(l)).length, 0);
+  const agent = path.join(home, '.claude', 'agents', 'keyholder.md');
+  fs.writeFileSync(agent, `---\nname: keyholder\ndescription: holds a key\n---\n\n${privateKey}\n`);
+  try {
+    const page = JSON.stringify(scan({ home }));
+    for (const l of keyLines) assert.ok(!page.includes(l), 'a key line reached the graph');
+  } finally {
+    fs.rmSync(agent);
+  }
+});
+
 test('frontmatter parser handles nested maps, lists and blocks', () => {
   const { data, body } = parseFrontmatter('---\nname: a\ndescription: >\n  one\n  two\nmetadata:\n  type: user\ntools:\n  - Read\n  - Bash\nlist: [x, "y"]\n---\nBody');
   assert.equal(data.name, 'a');
