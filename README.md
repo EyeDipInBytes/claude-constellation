@@ -84,7 +84,7 @@ The lines come from four sources:
 - Share a page only after `--redact` or `--anonymize`.
 - The page makes no network requests. A Content Security Policy with `default-src 'none'` blocks them.
 - The scanner never reads the values in an `env` block. It never reads MCP arguments, headers or URLs with paths. It reads only the name, the transport and the host of each server.
-- Every text preview passes through a secret filter. The filter removes API keys, tokens, JWTs, private keys, `password=` pairs, authorization headers, credential query parameters and credential flags on commands.
+- Every text preview passes through a secret filter. The filter removes API keys, tokens, JWTs, private keys, `password=` pairs, authorization headers, credential query parameters and credential flags on commands. The filter matches known shapes, so it can miss a secret in an unusual form. It is a safety net, not a reason to share a page with previews.
 - Paths show `~` in place of your home folder.
 
 ## The demo
