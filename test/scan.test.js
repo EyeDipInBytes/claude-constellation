@@ -160,6 +160,14 @@ test('redactSecrets kills passwords, any-case auth, query keys and CLI credentia
     'curl --oauth2-bearer ' + v + ' https://example.invalid',
     'tool --api-key=' + v,
     'curl -u ada:' + 'hunter2' + ' https://example.invalid',
+    'curl --user ada:' + 'hunter2',
+    'curl --user=ada:' + 'hunter2',
+    'password="say \\"' + 'hunter2' + '\\" to me"',
+    'password: |\n  correct horse ' + 'batterystaple' + '\n',
+    'curl --password "' + 'test pass phrase 123!' + '"',
+    'curl --password=' + 'hunter2' + ',world',
+    'https://example.invalid/?key=env-' + v,
+    'authorization: digest username="ada", response="' + v + '"',
   ];
   for (const s of leaks) {
     const out = redactSecrets(s);
@@ -170,6 +178,18 @@ test('redactSecrets kills passwords, any-case auth, query keys and CLI credentia
   assert.equal(redactSecrets('password: ${DB_PASSWORD}'), 'password: ${DB_PASSWORD}');
   assert.equal(redactSecrets('token based auth and basic understanding'), 'token based auth and basic understanding');
   assert.equal(redactSecrets('see https://example.invalid/docs?page=2'), 'see https://example.invalid/docs?page=2');
+  const pemProse = 'A private key begins with `-----BEGIN PRIVATE KEY-----`.\n\nRun the setup wizard to continue.';
+  assert.equal(redactSecrets(pemProse), pemProse);
+});
+
+test('redactSecrets stays fast on long crafted runs', () => {
+  const N = 524000; // the read cap
+  const fill = (unit) => unit.repeat(Math.ceil(N / unit.length)).slice(0, N);
+  for (const s of [fill('password-'), fill('token_'), ' ' + fill('-token-'), fill('&key.'), 'https://' + fill('a:'), fill('authorization: ')]) {
+    const t = Date.now();
+    redactSecrets(s);
+    assert.ok(Date.now() - t < 2000, `slow on ${s.slice(0, 20)}`);
+  }
 });
 
 test('a private key cut by the preview limit leaves no key line in the page', async () => {
