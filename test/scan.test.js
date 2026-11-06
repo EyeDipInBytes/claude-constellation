@@ -168,6 +168,11 @@ test('redactSecrets kills passwords, any-case auth, query keys and CLI credentia
     'curl --password=' + 'hunter2' + ',world',
     'https://example.invalid/?key=env-' + v,
     'authorization: digest username="ada", response="' + v + '"',
+    'curl --user "ada:correct horse ' + 'batterystaple' + '"',
+    'curl -uada:' + 'hunter2',
+    'Authorization: ApiKey ' + v,
+    'JWT_SECRET="correct horse ' + 'batterystaple' + '"',
+    'npm config set //registry.example.invalid/:_auth ' + v,
   ];
   for (const s of leaks) {
     const out = redactSecrets(s);
@@ -180,12 +185,13 @@ test('redactSecrets kills passwords, any-case auth, query keys and CLI credentia
   assert.equal(redactSecrets('see https://example.invalid/docs?page=2'), 'see https://example.invalid/docs?page=2');
   const pemProse = 'A private key begins with `-----BEGIN PRIVATE KEY-----`.\n\nRun the setup wizard to continue.';
   assert.equal(redactSecrets(pemProse), pemProse);
+  assert.equal(redactSecrets('headers: { Authorization: "Bearer ' + v + '" }'), 'headers: { Authorization: "Bearer ‹redacted›" }');
 });
 
 test('redactSecrets stays fast on long crafted runs', () => {
   const N = 524000; // the read cap
   const fill = (unit) => unit.repeat(Math.ceil(N / unit.length)).slice(0, N);
-  for (const s of [fill('password-'), fill('token_'), ' ' + fill('-token-'), fill('&key.'), 'https://' + fill('a:'), fill('authorization: ')]) {
+  for (const s of [fill('password-'), fill('token_'), ' ' + fill('-token-'), fill('&key.'), 'https://' + fill('a:'), fill('authorization: '), fill('eyJaaaaaaaa-'), fill('config set token ')]) {
     const t = Date.now();
     redactSecrets(s);
     assert.ok(Date.now() - t < 2000, `slow on ${s.slice(0, 20)}`);

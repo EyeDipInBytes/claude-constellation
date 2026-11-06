@@ -23,12 +23,21 @@ const PATTERNS = [
   [/\bglpat-[A-Za-z0-9_-]{16,}/g, MARK],
   [/\bnpm_[A-Za-z0-9]{30,}/g, MARK],
   // JSON web tokens
-  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, MARK],
-  // Authorization headers: Digest carries fields to the end of the line; other schemes one value
+  // The lookbehind gives one start per run: a run with many "eyJ" and no dot
+  // would otherwise be scanned again from each "eyJ".
+  [/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, MARK],
+  // Authorization headers: Digest carries quoted fields to the line end; any other
+  // scheme, the whole value to the line end or closing quote
   [/(\bauthorization["']?[ \t]*[:=][ \t]*["']?digest)[ \t]+[^\n]*/gi, `$1 ${MARK}`],
   [
-    /(\bauthorization["']?[ \t]*[:=][ \t]*["']?)(?:(bearer|basic|token|digest|negotiate)[ \t]+)?([^\s"'`,;]+)/gi,
-    (all, lead, scheme, value) => (isReference(value) ? all : `${lead}${scheme ? scheme + ' ' : ''}${MARK}`),
+    /(\bauthorization["']?[ \t]*[:=][ \t]*["']?)([^"'`\n]+)/gi,
+    (all, lead, value) => {
+      const v = value.trim();
+      const scheme = /^(bearer|basic|token|digest|negotiate)\s+/i.exec(v);
+      const rest = scheme ? v.slice(scheme[0].length) : v;
+      if (!rest || isReference(rest)) return all;
+      return `${lead}${scheme ? scheme[1] + ' ' : ''}${MARK}`;
+    },
   ],
   [/\b(Bearer|Basic|Token)\s+[A-Za-z0-9._~+/=-]{12,}/g, `$1 ${MARK}`],
   [/\b(bearer|basic|token)\s+(?=[A-Za-z._~+/=-]*\d)[A-Za-z0-9._~+/=-]{12,}/gi, `$1 ${MARK}`],
@@ -52,7 +61,17 @@ const PATTERNS = [
     (all, lead, value) => (isReference(unquote(value)) || value.startsWith('-') ? all : `${lead}${MARK}`),
   ],
   // curl -u user:pass, --user user:pass, --user=user:pass
-  [/((?:^|\s)(?:-u|--user)(?:[ \t]+|=)["']?[^\s:"']{1,64}:)[^\s"']+/gm, `$1${MARK}`],
+  [/((?:^|\s)(?:-u[ \t]*|--user(?:[ \t]+|=))")([^"\n:]{1,64}:)[^"\n]*"/gm, `$1$2${MARK}"`],
+  [/((?:^|\s)(?:-u[ \t]*|--user(?:[ \t]+|=))'?[^\s:'"]{1,64}:)[^\s'"]+/gm, `$1${MARK}`],
+  // Positional credentials: npm config set //host/:_auth X, yarn config set npmAuthToken X
+  [
+    new RegExp(
+      String.raw`(\bconfig[ \t]+set[ \t]+[^\s=]{0,128}(?:auth|token|passw(?:or)?d|secret|key)[^\s=]{0,32}(?:[ \t]+|=))` +
+        String.raw`(${QUOTED}|[^\s"'` + '`' + String.raw`]+)`,
+      'gi',
+    ),
+    (all, lead, value) => (isReference(unquote(value)) ? all : `${lead}${MARK}`),
+  ],
   // Credential query parameters: ?key=, &access_token=, &sig=, &code=
   [
     /([?&][\w.-]{0,32}(?:key|token|secret|sig|signature|passw(?:or)?d|pwd|auth|code|credential)[\w.-]{0,32}=)([^&#\s"'`]+)/gi,
@@ -62,8 +81,17 @@ const PATTERNS = [
   [/(\b[a-z][a-z0-9+.-]{0,30}:\/\/)[^\s/:@]{1,128}:[^\s/@]{1,256}@/gi, `$1${MARK}@`],
   // key=value or key: value where the key names a secret
   [
-    /((?:api[_-]?key|access[_-]?key|secret|token|passw(?:or)?d|pwd|credential|private[_-]?key|auth)[\w.-]{0,32}["']?\s*[:=]\s*)(["']?)([^\s"'`,;]{6,})\2/gi,
-    (all, lead, q, value) => (looksLikeWord(value) ? all : `${lead}${q}${MARK}${q}`),
+    new RegExp(
+      String.raw`((?:api[_-]?key|access[_-]?key|secret|token|passw(?:or)?d|pwd|credential|private[_-]?key|auth)[\w.-]{0,32}["']?[ \t]*[:=][ \t]*)` +
+        String.raw`(${QUOTED}|[^\s"'` + '`' + String.raw`,;]{6,})`,
+      'gi',
+    ),
+    (all, lead, value) => {
+      const q = /^["']/.test(value) ? value[0] : '';
+      const inner = unquote(value);
+      if (inner.length < 6 || looksLikeWord(inner)) return all;
+      return `${lead}${q}${MARK}${q && value.length > 1 && value.endsWith(q) ? q : ''}`;
+    },
   ],
   // Long opaque strings: 40+ chars of base64/hex with mixed classes
   [/\b[A-Za-z0-9+/_-]{40,}={0,2}/g, (s) => (isOpaque(s) ? MARK : s)],
@@ -91,6 +119,8 @@ function looksLikeWord(v) {
   if (/^[a-z]+(?:[-_][a-z]+)*$/.test(v) && v.length < 40) return true;
   if (/^<[^>]+>$/.test(v) || /^\[[^\]]+\]$/.test(v)) return true;
   if (v === MARK) return true;
+  const scheme = /^(?:bearer|basic|token|digest|negotiate)\s+(\S+)$/i.exec(v);
+  if (scheme && isReference(scheme[1])) return true; // "Bearer <token>", "Bearer ${X}", "Bearer ‹redacted›"
   return false;
 }
 
